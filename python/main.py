@@ -119,8 +119,8 @@ class MainWindow(QMainWindow):
 
         pi_layout = QVBoxLayout()
 
-        self.kp = ViewBox("kp","Kp","",20.0,editable=True,)
-        self.ki = ViewBox("ki","Ki","",10.0,editable=True,)
+        self.kp = ViewBox("kp","Kp","",self.niClient.config.kp,editable=True,)
+        self.ki = ViewBox("ki","Ki","",self.niClient.config.ki,editable=True,)
 
         self.kp.value_changed.connect(self.update_gains)
         self.ki.value_changed.connect(self.update_gains)

@@ -3,7 +3,7 @@ import gc
 import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import nidaqmx
@@ -915,7 +915,7 @@ class NiClient(QObject):
         if was_running:
             self.shutdown()
 
-        self.config = config
+        self.config = replace(config, kp=self.kp, ki=self.ki)
         self._create_worker()
 
         if was_running:
@@ -952,6 +952,7 @@ class NiClient(QObject):
 
         self.kp = float(kp)
         self.ki = float(ki)
+        self.config = replace(self.config, kp=self.kp, ki=self.ki)
 
         self.PI_coefs_signal.emit(self.kp,self.ki,)
 
