@@ -18,6 +18,8 @@ struct ControlConfig
     double max_voltage = 10.0;
     double kp = 20.0;
     double ki = 10.0;
+    double kff = 0.0;
+    double measurement_filter_hz = 0.0;
     double peak_amplitude_POS = 2.0;
     double peak_amplitude_NEG = -0.5;
     double peak_width = 1.0;
@@ -57,7 +59,7 @@ public:
 
     void setCoefficients(double kp, double ki) noexcept;
     void reset() noexcept;
-    double process(double reference, double measurement, double dt) noexcept;
+    double process(double reference, double measurement, double dt, double feedforward = 0.0) noexcept;
 
 private:
     double m_kp;

@@ -32,6 +32,7 @@ class SettingsWidget(QWidget):
         ("r_shunt", "Shunt resistance [ohm]", float),
         ("min_voltage", "Minimum voltage [V]", float),
         ("max_voltage", "Maximum voltage [V]", float),
+        ("measurement_filter_hz", "Measurement filter [Hz] (0 = off)", float),
         ("peak_amplitude_POS", "Peak amplitude coil 1 [A]", float),
         ("peak_amplitude_NEG", "Peak amplitude coil 2 [A]", float),
         ("peak_width", "Peak width [s]", float),
@@ -152,6 +153,10 @@ class SettingsWidget(QWidget):
                 raise ValueError("Batch size must be positive")
             if values["visualization_rate"] <= 0.0:
                 raise ValueError("Visualization rate must be positive")
+            if values["r_shunt"] <= 0.0:
+                raise ValueError("Shunt resistance must be positive")
+            if values["measurement_filter_hz"] < 0.0:
+                raise ValueError("Measurement filter cannot be negative")
             if not self.filename.text().strip():
                 raise ValueError("CSV filename cannot be empty")
 

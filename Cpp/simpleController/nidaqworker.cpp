@@ -37,6 +37,8 @@ void NiDaqWorker::setConfig(const ControlConfig &config)
     m_config = config;
     m_kp.store(config.kp, std::memory_order_relaxed);
     m_ki.store(config.ki, std::memory_order_relaxed);
+    m_kff.store(config.kff, std::memory_order_relaxed);
+    m_inverseShunt.store(1.0 / config.r_shunt, std::memory_order_relaxed);
 }
 
 void NiDaqWorker::setManualControl(bool enabled) noexcept
@@ -63,6 +65,16 @@ void NiDaqWorker::setCoefficients(double kp, double ki) noexcept
     m_ki.store(ki, std::memory_order_relaxed);
 }
 
+void NiDaqWorker::setKff(double kff) noexcept
+{
+    m_kff.store(kff, std::memory_order_relaxed);
+}
+
+void NiDaqWorker::setRShunt(double rShunt) noexcept
+{
+    m_inverseShunt.store(1.0 / rShunt, std::memory_order_relaxed);
+}
+
 void NiDaqWorker::prepareForStart() noexcept
 {
     m_stopRequested.store(false, std::memory_order_relaxed);
@@ -85,7 +97,10 @@ void NiDaqWorker::run()
 
         m_controlDt = 1.0 / config.sample_rate;
         m_controlPeriod = batchSize * m_controlDt;
-        m_inverseShunt = 1.0 / config.r_shunt;
+        m_inverseShunt.store(1.0 / config.r_shunt, std::memory_order_relaxed);
+        m_filterAlpha = config.measurement_filter_hz > 0.0 ? 1.0 - std::exp(-2.0 * 3.14159265358979323846 * config.measurement_filter_hz * m_controlPeriod) : 1.0;
+        m_filtered1 = 0.0;
+        m_filtered2 = 0.0;
         m_visualizationStride = std::max<std::size_t>(1, static_cast<std::size_t>(std::round(config.sample_rate / config.visualization_rate)));
         m_logBatchSamples = std::max<std::size_t>(1, static_cast<std::size_t>(std::round(config.sample_rate * config.log_emit_interval)));
         m_rateWindowCallbacks = 0;
@@ -96,7 +111,7 @@ void NiDaqWorker::run()
         m_sequence = buildSequence(config);
         m_aiData.resize(static_cast<std::size_t>(batchSize) * 2);
         m_logBatch.clear();
-        m_logBatch.reserve(static_cast<qsizetype>(m_logBatchSamples * 5));
+        m_logBatch.reserve(static_cast<qsizetype>(m_logBatchSamples * 7));
         m_controller1 = PiController(config.kp, config.ki, config.min_voltage, config.max_voltage);
         m_controller2 = PiController(config.kp, config.ki, config.min_voltage, config.max_voltage);
         m_outputData[0] = 0.0;
@@ -225,20 +240,24 @@ int NiDaqWorker::processSamples() noexcept
         sum1 += m_aiData[static_cast<std::size_t>(sample)];
         sum2 += m_aiData[static_cast<std::size_t>(batchSize + sample)];
     }
-    const double measurement1 = sum1 / batchSize * m_inverseShunt;
-    const double measurement2 = sum2 / batchSize * m_inverseShunt;
+    const double inverseShunt = m_inverseShunt.load(std::memory_order_relaxed);
+    const double measurement1 = sum1 / batchSize * inverseShunt;
+    const double measurement2 = sum2 / batchSize * inverseShunt;
+    m_filtered1 += m_filterAlpha * (measurement1 - m_filtered1);
+    m_filtered2 += m_filterAlpha * (measurement2 - m_filtered2);
     const ReferencePoint reference = manual
                                          ? ReferencePoint{m_manualReference1.load(std::memory_order_relaxed), m_manualReference2.load(std::memory_order_relaxed)}
                                          : m_sequence[m_sequenceIndex + static_cast<std::size_t>(batchSize - 1)];
 
     const double kp = m_kp.load(std::memory_order_relaxed);
     const double ki = m_ki.load(std::memory_order_relaxed);
+    const double kff = m_kff.load(std::memory_order_relaxed);
 
     m_controller1.setCoefficients(kp, ki);
     m_controller2.setCoefficients(kp, ki);
 
-    m_outputData[0] = m_controller1.process(reference.first, measurement1, m_controlPeriod);
-    m_outputData[1] = m_controller2.process(reference.second, measurement2, m_controlPeriod);
+    m_outputData[0] = m_controller1.process(reference.first, m_filtered1, m_controlPeriod, kff * reference.first);
+    m_outputData[1] = m_controller2.process(reference.second, m_filtered2, m_controlPeriod, kff * reference.second);
 
     const int32 writeStatus = DAQmxWriteAnalogF64(m_aoTask, 1, FALSE, 0.01, DAQmx_Val_GroupByChannel, m_outputData, nullptr, nullptr);
     if (DAQmxFailed(writeStatus)) {
@@ -264,18 +283,20 @@ int NiDaqWorker::processSamples() noexcept
         const std::size_t dataIndex = static_cast<std::size_t>(sample);
         m_logBatch.append(startTime + static_cast<double>(sample) * m_controlDt);
         m_logBatch.append(loggedReference.first);
-        m_logBatch.append(m_aiData[dataIndex] * m_inverseShunt);
+        m_logBatch.append(m_aiData[dataIndex] * inverseShunt);
         m_logBatch.append(loggedReference.second);
-        m_logBatch.append(m_aiData[static_cast<std::size_t>(batchSize) + dataIndex] * m_inverseShunt);
+        m_logBatch.append(m_aiData[static_cast<std::size_t>(batchSize) + dataIndex] * inverseShunt);
+        m_logBatch.append(m_outputData[0]);
+        m_logBatch.append(m_outputData[1]);
     }
     if (!manual) {
         m_sequenceIndex += static_cast<std::size_t>(batchSize);
     }
     m_iterationCount += static_cast<std::size_t>(batchSize);
-    if (m_logBatch.size() >= static_cast<qsizetype>(m_logBatchSamples * 5)) {
+    if (m_logBatch.size() >= static_cast<qsizetype>(m_logBatchSamples * 7)) {
         emit batchReady(std::move(m_logBatch));
         m_logBatch = QVector<double>();
-        m_logBatch.reserve(static_cast<qsizetype>(m_logBatchSamples * 5));
+        m_logBatch.reserve(static_cast<qsizetype>(m_logBatchSamples * 7));
     }
 
     const auto now = std::chrono::steady_clock::now();

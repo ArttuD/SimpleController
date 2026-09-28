@@ -23,6 +23,8 @@ public:
     void setManualControl(bool enabled) noexcept;
     void setManualReferences(double first, double second) noexcept;
     void setCoefficients(double kp, double ki) noexcept;
+    void setKff(double kff) noexcept;
+    void setRShunt(double rShunt) noexcept;
     void prepareForStart() noexcept;
     void requestStop() noexcept;
     int processSamples() noexcept;
@@ -56,7 +58,9 @@ private:
     std::size_t m_rateWindowCallbacks = 0;
     double m_controlDt = 0.001;
     double m_controlPeriod = 0.001;
-    double m_inverseShunt = 1.0;
+    double m_filterAlpha = 1.0;
+    double m_filtered1 = 0.0;
+    double m_filtered2 = 0.0;
     double m_windowWorstInterval = 0.0;
     quint64 m_windowLateCallbacks = 0;
     std::atomic_bool m_stopRequested{false};
@@ -68,6 +72,8 @@ private:
     std::atomic<double> m_manualReference2{0.0};
     std::atomic<double> m_kp{20.0};
     std::atomic<double> m_ki{10.0};
+    std::atomic<double> m_kff{0.0};
+    std::atomic<double> m_inverseShunt{1.0};
     std::mutex m_waitMutex;
     std::condition_variable m_finishedCondition;
     std::string m_callbackError;

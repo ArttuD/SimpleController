@@ -10,8 +10,8 @@ import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 
-CSV_HEADER = "timestamp_s,reference_1_A,measurement_1_A,reference_2_A,measurement_2_A\r\n"
-ROW_FORMAT = "%.9g,%.9g,%.9g,%.9g,%.9g\r\n"
+CSV_HEADER = "timestamp_s,reference_1_A,measurement_1_A,reference_2_A,measurement_2_A,output_1_V,output_2_V\r\n"
+ROW_FORMAT = "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\r\n"
 
 
 def _saver_loop(command_queue, status_queue):
@@ -107,9 +107,9 @@ class SaverClient(QObject):
         # Never block the control thread: a full queue costs a log gap, not a stall.
         self._send(("batch", batch,), blocking=False)
 
-    def save_data(self,reference_1,measurement_1,reference_2,measurement_2,timestamp,):
+    def save_data(self,reference_1,measurement_1,reference_2,measurement_2,timestamp,output_1=float("nan"),output_2=float("nan"),):
 
-        column = np.array([[timestamp],[reference_1],[measurement_1],[reference_2],[measurement_2]],dtype=np.float64,)
+        column = np.array([[timestamp],[reference_1],[measurement_1],[reference_2],[measurement_2],[output_1],[output_2]],dtype=np.float64,)
         self.save_batch(column)
 
     def _send(self, item, blocking):

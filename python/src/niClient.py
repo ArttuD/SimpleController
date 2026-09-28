@@ -1,7 +1,9 @@
 
 import gc
 import logging
+import math
 import sys
+import threading
 import time
 from dataclasses import dataclass, replace
 
@@ -68,6 +70,8 @@ class ControlConfig:
 
     kp: float = 20.0
     ki: float = 10.0
+    kff: float = 0.0 # Feedforward [V/A], ideally 1 / amplifier gain
+    measurement_filter_hz: float = 0.0 # Low-pass on the controlled current, 0 = off
 
     peak_amplitude_POS: float = 2.0
     peak_amplitude_NEG: float = -0.5
@@ -126,12 +130,12 @@ class PIController:
 
         self.integral = 0.0
 
-    def process(self,reference,measurement,dt,):
+    def process(self,reference,measurement,dt,feedforward=0.0,):
 
         error = reference - measurement
 
         candidate_integral = (self.integral+ error * dt)
-        raw_output = (self.kp * error+ self.ki * candidate_integral)
+        raw_output = (feedforward + self.kp * error+ self.ki * candidate_integral)
 
         if raw_output > self.output_max:
 
@@ -188,6 +192,7 @@ class NiClientWorker(QObject):
         self.current_2_feed = 0.0
 
         self.sequence_index = 0
+        self.reset_sequence = False
         self.control_start_time = 0.0
 
         self.pi_1 = PIController(self.config.kp,self.config.ki,self.config.min_voltage,self.config.max_voltage,)
@@ -199,6 +204,7 @@ class NiClientWorker(QObject):
 
         self.ai_data = np.zeros((2, self.config.ai_read_batch_size),dtype=np.float64,)
         self.ao_data = np.zeros(2,dtype=np.float64,)
+        self.output_lock = threading.Lock()
 
         # Cached so the callback never touches a property or a dataclass field.
         self.batch_size = self.config.ai_read_batch_size
@@ -206,6 +212,13 @@ class NiClientWorker(QObject):
         self.control_period = self.batch_size * self.control_dt
         self.late_threshold = 2.0 * self.control_period
         self.inv_r_shunt = 1.0 / self.config.r_shunt
+        self.kff = self.config.kff
+
+        filter_hz = self.config.measurement_filter_hz
+        self.filter_alpha = 1.0 - math.exp(-2.0 * math.pi * filter_hz * self.control_period) if filter_hz > 0.0 else 1.0
+        self.filtered_1 = 0.0
+        self.filtered_2 = 0.0
+
         self.perf_counter = time.perf_counter
         self.sample_offsets = np.arange(self.batch_size,dtype=np.float64,) * self.control_dt
 
@@ -220,7 +233,7 @@ class NiClientWorker(QObject):
 
         # Logs every acquired sample, not just one row per control update.
         batches_per_emit = max(1,int(round(self.config.log_emit_interval/ self.control_period)),)
-        self.log_buffer = np.zeros((5, batches_per_emit * self.batch_size),dtype=np.float64,)
+        self.log_buffer = np.zeros((7, batches_per_emit * self.batch_size),dtype=np.float64,)
         self.log_fill = 0
 
         self.ao_writer = None
@@ -397,6 +410,7 @@ class NiClientWorker(QObject):
             self.pi_2.reset()
 
             self.sequence_index = 0
+            self.reset_sequence = False
             self.iteration_count = 0
             self.log_fill = 0
             self.finalizing = False
@@ -440,6 +454,7 @@ class NiClientWorker(QObject):
             self.logger.exception("Failed to start NI control")
 
             self.running = False
+            self._restore_scheduler_resolution()
             self.status_changed.emit(False)
             self.error.emit(f"NI start error: {exc}")
             self._cleanup_tasks()
@@ -473,6 +488,10 @@ class NiClientWorker(QObject):
             measurement_1 = means[0] * inv_r_shunt
             measurement_2 = means[1] * inv_r_shunt
 
+            filter_alpha = self.filter_alpha
+            self.filtered_1 += filter_alpha * (measurement_1 - self.filtered_1)
+            self.filtered_2 += filter_alpha * (measurement_2 - self.filtered_2)
+
             if self.manual_control:
                 reference_1 = self.current_1_feed
                 reference_2 = self.current_2_feed
@@ -480,6 +499,10 @@ class NiClientWorker(QObject):
                 log_reference_1 = reference_1
                 log_reference_2 = reference_2
             else:
+                if self.reset_sequence:
+                    self.reset_sequence = False
+                    self.sequence_index = 0
+
                 start_index = self.sequence_index
                 sequence_index = start_index + self.batch_size - 1
 
@@ -498,11 +521,16 @@ class NiClientWorker(QObject):
             control_period = self.control_period
 
             ao_data = self.ao_data
-            ao_data[0] = self.pi_1.process(reference_1,measurement_1,control_period,)
-            ao_data[1] = self.pi_2.process(reference_2,measurement_2,control_period,)
+            kff = self.kff
+            ao_data[0] = self.pi_1.process(reference_1,self.filtered_1,control_period,kff * reference_1,)
+            ao_data[1] = self.pi_2.process(reference_2,self.filtered_2,control_period,kff * reference_2,)
 
             write_started = perf_counter()
-            self.ao_writer.write_one_sample(ao_data,timeout=0.010,)
+            # Shared with _write_zero so a stop can never be followed by a late non-zero write.
+            with self.output_lock:
+                if self.finalizing:
+                    return 0
+                self.ao_writer.write_one_sample(ao_data,timeout=0.010,)
             now = perf_counter()
 
             fill = self.log_fill
@@ -516,6 +544,8 @@ class NiClientWorker(QObject):
             log_buffer[2, fill:end] = ai_data[0] * inv_r_shunt
             log_buffer[3, fill:end] = log_reference_2
             log_buffer[4, fill:end] = ai_data[1] * inv_r_shunt
+            log_buffer[5, fill:end] = ao_data[0]
+            log_buffer[6, fill:end] = ao_data[1]
             self.log_fill = end
 
             self.iteration_count += self.batch_size
@@ -585,6 +615,10 @@ class NiClientWorker(QObject):
 
     def _restore_scheduler_resolution(self):
 
+        if self.previous_switch_interval is not None:
+            sys.setswitchinterval(self.previous_switch_interval)
+            self.previous_switch_interval = None
+
         if self.gc_was_enabled:
             gc.enable()
             self.gc_was_enabled = False
@@ -605,10 +639,6 @@ class NiClientWorker(QObject):
             self.logger.exception("Failed to restore scheduler resolution")
     @pyqtSlot()
     def _finalize(self):
-
-        if self.previous_switch_interval is not None:
-            sys.setswitchinterval(self.previous_switch_interval)
-            self.previous_switch_interval = None
 
         self._restore_scheduler_resolution()
         self._write_zero()
@@ -691,8 +721,9 @@ class NiClientWorker(QObject):
             return
 
         try:
-            self.ao_data.fill(0.0)
-            self.ao_writer.write_one_sample(self.ao_data,timeout=0.050,)
+            # Own array: the callback may still be filling ao_data on its thread.
+            with self.output_lock:
+                self.ao_writer.write_one_sample(np.zeros(2,dtype=np.float64,),timeout=0.050,)
 
         except Exception:
 
@@ -715,8 +746,8 @@ class NiClientWorker(QObject):
         self.pi_2.reset()
         self.sequence_index = 0
         self.control_start_time = 0.0
-        self.current_1_feed = 0.0
-        self.current_2_feed = 0.0
+        self.filtered_1 = 0.0
+        self.filtered_2 = 0.0
 
 
     def _cleanup_tasks(self):
@@ -767,7 +798,7 @@ class NiClientWorker(QObject):
             self.pi_2.reset()
         else:
 
-            self.sequence_index = 0
+            self.reset_sequence = True
 
 
 
@@ -792,6 +823,12 @@ class NiClientWorker(QObject):
         self.inv_r_shunt = 1.0 / float(r_shunt)
         self.logger.info("Shunt resistance updated: %.6f ohm",r_shunt,)
 
+    @pyqtSlot(float)
+    def set_kff(self,kff,):
+
+        self.kff = float(kff)
+        self.logger.info("Feedforward updated: Kff=%.4f V/A",kff,)
+
 
 
 class NiClient(QObject):
@@ -804,6 +841,7 @@ class NiClient(QObject):
     currents_feed_signal = pyqtSignal(float,float,)
     PI_coefs_signal = pyqtSignal(float,float,)
     r_shunt_signal = pyqtSignal(float)
+    kff_signal = pyqtSignal(float)
 
     error = pyqtSignal(str)
     status_changed = pyqtSignal(bool)
@@ -826,6 +864,7 @@ class NiClient(QObject):
         self.current_2_feed = 0.0
         self.kp = self.config.kp
         self.ki = self.config.ki
+        self.kff = self.config.kff
 
         self.worker = None
         self.thread = None
@@ -853,6 +892,7 @@ class NiClient(QObject):
         self.currents_feed_signal.connect(self.worker.set_currents_feed,type=Qt.ConnectionType.DirectConnection,)
         self.PI_coefs_signal.connect(self.worker.set_PI_coefs,type=Qt.ConnectionType.DirectConnection,)
         self.r_shunt_signal.connect(self.worker.set_r_shunt,type=Qt.ConnectionType.DirectConnection,)
+        self.kff_signal.connect(self.worker.set_kff,type=Qt.ConnectionType.DirectConnection,)
 
 
         self.worker.error.connect(self.error,)
@@ -914,6 +954,7 @@ class NiClient(QObject):
         self.worker.set_manual_control(self.manual_control)
         self.worker.set_currents_feed(self.current_1_feed,self.current_2_feed,)
         self.worker.set_PI_coefs(self.kp,self.ki,)
+        self.worker.set_kff(self.kff)
 
         self.start_signal.emit()
 
@@ -924,7 +965,7 @@ class NiClient(QObject):
         # The worker caches the config at construction, so it must always be replaced.
         self.shutdown()
 
-        self.config = replace(config, kp=self.kp, ki=self.ki)
+        self.config = replace(config, kp=self.kp, ki=self.ki, kff=self.kff)
         self._create_worker()
 
         if was_running:
@@ -972,9 +1013,16 @@ class NiClient(QObject):
 
         self.r_shunt_signal.emit(r_shunt)
 
+    def update_kff(self,kff,):
+
+        self.kff = float(kff)
+        self.config = replace(self.config, kff=self.kff)
+
+        self.kff_signal.emit(self.kff)
+
     def _disconnect_worker(self):
 
-        for signal in (self.start_signal,self.stop_signal,self.manual_control_signal,self.currents_feed_signal,self.PI_coefs_signal,self.r_shunt_signal,):
+        for signal in (self.start_signal,self.stop_signal,self.manual_control_signal,self.currents_feed_signal,self.PI_coefs_signal,self.r_shunt_signal,self.kff_signal,):
             try:
                 signal.disconnect()
             except TypeError:

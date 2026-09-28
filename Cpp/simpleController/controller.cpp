@@ -58,11 +58,11 @@ void PiController::reset() noexcept
     m_integral = 0.0;
 }
 
-double PiController::process(double reference, double measurement, double dt) noexcept
+double PiController::process(double reference, double measurement, double dt, double feedforward) noexcept
 {
     const double error = reference - measurement;
     const double candidateIntegral = m_integral + error * dt;
-    const double rawOutput = m_kp * error + m_ki * candidateIntegral;
+    const double rawOutput = feedforward + m_kp * error + m_ki * candidateIntegral;
 
     if (rawOutput > m_outputMax) {
         if (error < 0.0) {

@@ -90,16 +90,16 @@ void CsvSaver::run()
                 emit errorOccurred(QStringLiteral("Cannot open CSV file: %1").arg(file.errorString()));
                 continue;
             }
-            file.write("timestamp_s,reference_1_A,measurement_1_A,reference_2_A,measurement_2_A\r\n");
+            file.write("timestamp_s,reference_1_A,measurement_1_A,reference_2_A,measurement_2_A,output_1_V,output_2_V\r\n");
             emit statusChanged(QStringLiteral("Saving measurements: %1").arg(info.fileName()));
             continue;
         }
         if (message.type == MessageType::Batch && file.isOpen()) {
             QByteArray output;
-            output.reserve(message.samples.size() * 24);
-            char row[192];
-            for (qsizetype index = 0; index + 4 < message.samples.size(); index += 5) {
-                const int length = std::snprintf(row, sizeof(row), "%.9g,%.9g,%.9g,%.9g,%.9g\r\n", message.samples[index], message.samples[index + 1], message.samples[index + 2], message.samples[index + 3], message.samples[index + 4]);
+            output.reserve(message.samples.size() * 16);
+            char row[256];
+            for (qsizetype index = 0; index + 6 < message.samples.size(); index += 7) {
+                const int length = std::snprintf(row, sizeof(row), "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\r\n", message.samples[index], message.samples[index + 1], message.samples[index + 2], message.samples[index + 3], message.samples[index + 4], message.samples[index + 5], message.samples[index + 6]);
                 output.append(row, length);
             }
             if (file.write(output) != output.size()) {

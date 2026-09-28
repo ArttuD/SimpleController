@@ -126,11 +126,15 @@ class MainWindow(QMainWindow):
         self.kp.value_changed.connect(self.update_gains)
         self.ki.value_changed.connect(self.update_gains)
 
+        self.kff_box = ViewBox("kff","Kff","V/A",self.niClient.config.kff,editable=True,decimals=4,)
+        self.kff_box.value_changed.connect(self.update_kff)
+
         self.r_shunt_box = ViewBox("r_shunt","R shunt","ohm",self.niClient.config.r_shunt,editable=True,decimals=4,)
         self.r_shunt_box.value_changed.connect(self.update_r_shunt)
 
         pi_layout.addWidget(self.kp)
         pi_layout.addWidget(self.ki)
+        pi_layout.addWidget(self.kff_box)
         pi_layout.addWidget(self.r_shunt_box)
 
         control_layout.addLayout(pi_layout)
@@ -276,6 +280,12 @@ class MainWindow(QMainWindow):
 
         self.niClient.update_PI_coefs(kp,ki,)
         self.logger.info("PI updated: Kp=%.4f Ki=%.4f",kp,ki,)
+
+    def update_kff(self,value,):
+
+        self.niClient.update_kff(value)
+        self.logger.info("Feedforward updated: Kff=%.4f V/A",value,)
+        self.print_status(f"Feedforward set to {value:g} V/A")
 
     def update_r_shunt(self,value,):
 

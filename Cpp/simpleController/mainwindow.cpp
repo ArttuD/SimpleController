@@ -18,7 +18,9 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSlider>
+#include <QStringList>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QDoubleValidator>
@@ -66,19 +68,37 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     addCurrentSlider(QStringLiteral("Current 2"), m_current2Slider, m_current2Value);
     controlRow->addWidget(manualGroup, 2);
 
-    auto *piGroup = new QGroupBox(QStringLiteral("PI gains"), graphPage);
+    auto *piGroup = new QGroupBox(QStringLiteral("Controller"), graphPage);
     auto *piForm = new QFormLayout(piGroup);
     m_kp = new QDoubleSpinBox(piGroup);
     m_ki = new QDoubleSpinBox(piGroup);
+    m_kff = new QDoubleSpinBox(piGroup);
+    m_rShunt = new QDoubleSpinBox(piGroup);
     for (auto *spin : {m_kp, m_ki}) {
         spin->setRange(-100000.0, 100000.0);
         spin->setDecimals(4);
         spin->setSingleStep(0.1);
     }
+    m_kff->setRange(-1000.0, 1000.0);
+    m_kff->setDecimals(4);
+    m_kff->setSingleStep(0.01);
+    m_kff->setSuffix(QStringLiteral(" V/A"));
+    m_rShunt->setRange(0.000001, 1000.0);
+    m_rShunt->setDecimals(6);
+    m_rShunt->setSingleStep(0.001);
+    m_rShunt->setSuffix(QStringLiteral(" ohm"));
+    // Otherwise every keystroke reaches the hardware, e.g. typing 20 sends 2 first.
+    for (auto *spin : {m_kp, m_ki, m_kff, m_rShunt}) {
+        spin->setKeyboardTracking(false);
+    }
     m_kp->setValue(m_config.kp);
     m_ki->setValue(m_config.ki);
+    m_kff->setValue(m_config.kff);
+    m_rShunt->setValue(m_config.r_shunt);
     piForm->addRow(QStringLiteral("Kp"), m_kp);
     piForm->addRow(QStringLiteral("Ki"), m_ki);
+    piForm->addRow(QStringLiteral("Kff"), m_kff);
+    piForm->addRow(QStringLiteral("R shunt"), m_rShunt);
     controlRow->addWidget(piGroup);
 
     auto *readoutGroup = new QGroupBox(QStringLiteral("Readout"), graphPage);
@@ -113,19 +133,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     const auto addTextEditor = [this, settingsContent, settingsForm](const QString &label, std::string ControlConfig::*member) {
         auto *line = new QLineEdit(QString::fromStdString(m_config.*member), settingsContent);
         settingsForm->addRow(label, line);
-        m_configEditors.append({line, nullptr, nullptr, member});
+        m_configEditors.append({line, nullptr, nullptr, member, label});
     };
     const auto addRealEditor = [this, settingsContent, settingsForm](const QString &label, double ControlConfig::*member) {
         auto *line = new QLineEdit(QString::number(m_config.*member, 'g', 12), settingsContent);
         line->setValidator(new QDoubleValidator(-1.0e12, 1.0e12, 8, line));
         settingsForm->addRow(label, line);
-        m_configEditors.append({line, member, nullptr, nullptr});
+        m_configEditors.append({line, member, nullptr, nullptr, label});
     };
     const auto addIntegerEditor = [this, settingsContent, settingsForm](const QString &label, int ControlConfig::*member) {
         auto *line = new QLineEdit(QString::number(m_config.*member), settingsContent);
         line->setValidator(new QIntValidator(0, 100000000, line));
         settingsForm->addRow(label, line);
-        m_configEditors.append({line, nullptr, member, nullptr});
+        m_configEditors.append({line, nullptr, member, nullptr, label});
     };
 
     addTextEditor(QStringLiteral("Device name"), &ControlConfig::device_name);
@@ -137,6 +157,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     addRealEditor(QStringLiteral("Shunt resistance [ohm]"), &ControlConfig::r_shunt);
     addRealEditor(QStringLiteral("Minimum voltage [V]"), &ControlConfig::min_voltage);
     addRealEditor(QStringLiteral("Maximum voltage [V]"), &ControlConfig::max_voltage);
+    addRealEditor(QStringLiteral("Measurement filter [Hz] (0 = off)"), &ControlConfig::measurement_filter_hz);
     addRealEditor(QStringLiteral("Peak amplitude coil 1 [A]"), &ControlConfig::peak_amplitude_POS);
     addRealEditor(QStringLiteral("Peak amplitude coil 2 [A]"), &ControlConfig::peak_amplitude_NEG);
     addRealEditor(QStringLiteral("Peak width [s]"), &ControlConfig::peak_width);
@@ -197,6 +218,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     connect(m_current2Slider, &QSlider::valueChanged, this, updateManualReferences);
     connect(m_kp, &QDoubleSpinBox::valueChanged, this, [this](double) { m_niWorker.setCoefficients(m_kp->value(), m_ki->value()); });
     connect(m_ki, &QDoubleSpinBox::valueChanged, this, [this](double) { m_niWorker.setCoefficients(m_kp->value(), m_ki->value()); });
+    connect(m_kff, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        m_niWorker.setKff(value);
+        appendStatus(QStringLiteral("Feedforward set to %1 V/A").arg(value, 0, 'g', 6));
+    });
+    connect(m_rShunt, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        m_niWorker.setRShunt(value);
+        for (const ConfigEditor &editor : m_configEditors) {
+            if (editor.real == &ControlConfig::r_shunt) {
+                editor.line->setText(QString::number(value, 'g', 12));
+            }
+        }
+        appendStatus(QStringLiteral("Shunt resistance set to %1 ohm").arg(value, 0, 'g', 6));
+    });
 
     connect(&m_niWorker, &NiDaqWorker::sampleUpdated, m_plot, &PlotWidget::appendSample);
     connect(&m_niWorker, &NiDaqWorker::sampleUpdated, this, [this](double, double measurement1, double, double measurement2, double) {
@@ -240,6 +274,7 @@ bool MainWindow::applySettings(bool restartIfRunning)
     candidate.sequence_type = m_sequenceMode->currentText().toStdString();
     candidate.kp = m_kp->value();
     candidate.ki = m_ki->value();
+    candidate.kff = m_kff->value();
     for (const ConfigEditor &editor : m_configEditors) {
         if (editor.real) {
             bool valid = false;
@@ -273,9 +308,27 @@ bool MainWindow::applySettings(bool restartIfRunning)
         appendStatus(QStringLiteral("Settings error: rates, shunt resistance, and voltage range must be positive"));
         return false;
     }
+    if (candidate.measurement_filter_hz < 0.0) {
+        appendStatus(QStringLiteral("Settings error: measurement filter cannot be negative"));
+        return false;
+    }
     if (m_filename->text().trimmed().isEmpty()) {
         appendStatus(QStringLiteral("Settings error: CSV filename cannot be empty"));
         return false;
+    }
+
+    QStringList changes;
+    if (candidate.sequence_type != m_config.sequence_type) {
+        changes.append(QStringLiteral("Current sequence: %1 -> %2").arg(QString::fromStdString(m_config.sequence_type), QString::fromStdString(candidate.sequence_type)));
+    }
+    for (const ConfigEditor &editor : m_configEditors) {
+        if (editor.real && m_config.*(editor.real) != candidate.*(editor.real)) {
+            changes.append(QStringLiteral("%1: %2 -> %3").arg(editor.label, QString::number(m_config.*(editor.real), 'g', 12), QString::number(candidate.*(editor.real), 'g', 12)));
+        } else if (editor.integer && m_config.*(editor.integer) != candidate.*(editor.integer)) {
+            changes.append(QStringLiteral("%1: %2 -> %3").arg(editor.label, QString::number(m_config.*(editor.integer)), QString::number(candidate.*(editor.integer))));
+        } else if (editor.text && m_config.*(editor.text) != candidate.*(editor.text)) {
+            changes.append(QStringLiteral("%1: %2 -> %3").arg(editor.label, QString::fromStdString(m_config.*(editor.text)), QString::fromStdString(candidate.*(editor.text))));
+        }
     }
 
     const bool wasRunning = m_niWorker.isRunning();
@@ -285,8 +338,15 @@ bool MainWindow::applySettings(bool restartIfRunning)
     m_config = candidate;
     m_kp->setValue(m_config.kp);
     m_ki->setValue(m_config.ki);
+    {
+        const QSignalBlocker blocker(m_rShunt);
+        m_rShunt->setValue(m_config.r_shunt);
+    }
     m_niWorker.setConfig(m_config);
     m_saver->openFile(m_filename->text().trimmed());
+    if (!changes.isEmpty()) {
+        appendStatus(QStringLiteral("Changed: ") + changes.join(QStringLiteral(", ")));
+    }
     appendStatus(QStringLiteral("Settings applied; CSV: ") + m_filename->text().trimmed());
     if (wasRunning && restartIfRunning) {
         startControl();

@@ -36,6 +36,7 @@ private:
         double ControlConfig::*real = nullptr;
         int ControlConfig::*integer = nullptr;
         std::string ControlConfig::*text = nullptr;
+        QString label;
     };
 
     bool applySettings(bool restartIfRunning);
@@ -62,6 +63,8 @@ private:
     QLabel *m_timingStatus;
     QDoubleSpinBox *m_kp;
     QDoubleSpinBox *m_ki;
+    QDoubleSpinBox *m_kff;
+    QDoubleSpinBox *m_rShunt;
     QPlainTextEdit *m_softwareStatus;
     PlotWidget *m_plot;
 };
