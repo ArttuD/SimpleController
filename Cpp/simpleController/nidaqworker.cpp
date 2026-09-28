@@ -44,6 +44,7 @@ void NiDaqWorker::setManualControl(bool enabled) noexcept
     const bool previous = m_manualControl.exchange(enabled, std::memory_order_relaxed);
     if (previous != enabled) {
         m_resetControllers.store(enabled, std::memory_order_relaxed);
+
         if (previous && !enabled) {
             m_resetSequence.store(true, std::memory_order_relaxed);
         }
@@ -81,6 +82,7 @@ void NiDaqWorker::run()
     try {
         const ControlConfig config = m_config;
         const int batchSize = config.ai_read_batch_size;
+
         m_controlDt = 1.0 / config.sample_rate;
         m_controlPeriod = batchSize * m_controlDt;
         m_inverseShunt = 1.0 / config.r_shunt;
@@ -102,6 +104,7 @@ void NiDaqWorker::run()
 
         const std::string inputChannels = config.device_name + "/" + config.ai_channel;
         const std::string outputChannels = config.device_name + "/" + config.ao_channel;
+
         checkDaqmx(DAQmxCreateTask("SimpleController_AI", &m_aiTask), "Create AI task");
         checkDaqmx(DAQmxCreateAIVoltageChan(m_aiTask, inputChannels.c_str(), "", DAQmx_Val_Cfg_Default, -10.0, 10.0, DAQmx_Val_Volts, nullptr), "Configure AI channels");
         checkDaqmx(DAQmxCfgSampClkTiming(m_aiTask, "", config.sample_rate, DAQmx_Val_Rising, DAQmx_Val_ContSamps, static_cast<uInt64>(config.ai_buffer_size)), "Configure AI sample clock");
@@ -121,6 +124,7 @@ void NiDaqWorker::run()
         checkDaqmx(DAQmxStartTask(m_aiTask), "Start AI task");
 
         std::unique_lock<std::mutex> lock(m_waitMutex);
+
         m_finishedCondition.wait(lock, [this]() {
             return m_stopRequested.load(std::memory_order_relaxed) || m_finished.load(std::memory_order_relaxed);
         });
@@ -128,9 +132,11 @@ void NiDaqWorker::run()
 
         m_outputData[0] = 0.0;
         m_outputData[1] = 0.0;
+
         if (m_aoTask != nullptr) {
             DAQmxWriteAnalogF64(m_aoTask, 1, FALSE, 0.05, DAQmx_Val_GroupByChannel, m_outputData, nullptr, nullptr);
         }
+
         if (m_aiTask != nullptr) {
             DAQmxStopTask(m_aiTask);
             DAQmxClearTask(m_aiTask);
@@ -171,15 +177,18 @@ int NiDaqWorker::processSamples() noexcept
     if (m_stopRequested.load(std::memory_order_relaxed) || m_finished.load(std::memory_order_relaxed)) {
         return 0;
     }
+
     if (m_resetSequence.exchange(false, std::memory_order_relaxed)) {
         m_sequenceIndex = 0;
     }
+
     if (m_resetControllers.exchange(false, std::memory_order_relaxed)) {
         m_controller1.reset();
         m_controller2.reset();
     }
 
     const auto callbackStart = std::chrono::steady_clock::now();
+
     if (m_lastCallbackStart.time_since_epoch().count() != 0) {
         const double interval = std::chrono::duration<double>(callbackStart - m_lastCallbackStart).count();
         m_windowWorstInterval = std::max(m_windowWorstInterval, interval);
@@ -192,6 +201,7 @@ int NiDaqWorker::processSamples() noexcept
     const int batchSize = m_config.ai_read_batch_size;
     int32 samplesRead = 0;
     const int32 readStatus = DAQmxReadAnalogF64(m_aiTask, batchSize, 0.01, DAQmx_Val_GroupByChannel, m_aiData.data(), static_cast<uInt32>(m_aiData.size()), &samplesRead, nullptr);
+
     if (DAQmxFailed(readStatus)) {
         setCallbackError("Read AI samples", readStatus);
         return 0;
@@ -210,6 +220,7 @@ int NiDaqWorker::processSamples() noexcept
 
     double sum1 = 0.0;
     double sum2 = 0.0;
+
     for (int sample = 0; sample < batchSize; ++sample) {
         sum1 += m_aiData[static_cast<std::size_t>(sample)];
         sum2 += m_aiData[static_cast<std::size_t>(batchSize + sample)];
@@ -219,12 +230,16 @@ int NiDaqWorker::processSamples() noexcept
     const ReferencePoint reference = manual
                                          ? ReferencePoint{m_manualReference1.load(std::memory_order_relaxed), m_manualReference2.load(std::memory_order_relaxed)}
                                          : m_sequence[m_sequenceIndex + static_cast<std::size_t>(batchSize - 1)];
+
     const double kp = m_kp.load(std::memory_order_relaxed);
     const double ki = m_ki.load(std::memory_order_relaxed);
+
     m_controller1.setCoefficients(kp, ki);
     m_controller2.setCoefficients(kp, ki);
+
     m_outputData[0] = m_controller1.process(reference.first, measurement1, m_controlPeriod);
     m_outputData[1] = m_controller2.process(reference.second, measurement2, m_controlPeriod);
+
     const int32 writeStatus = DAQmxWriteAnalogF64(m_aoTask, 1, FALSE, 0.01, DAQmx_Val_GroupByChannel, m_outputData, nullptr, nullptr);
     if (DAQmxFailed(writeStatus)) {
         setCallbackError("Write AO sample", writeStatus);

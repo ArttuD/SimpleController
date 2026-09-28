@@ -60,6 +60,7 @@ class ViewBox(QWidget):
         start_value=0.0,
         editable=False,
         parent=None,
+        decimals=2,
     ):
 
         super().__init__(parent)
@@ -68,6 +69,7 @@ class ViewBox(QWidget):
         self.text = text
         self.units = units
         self.editable = editable
+        self.decimals = int(decimals)
 
         self.value = float(start_value)
 
@@ -80,7 +82,7 @@ class ViewBox(QWidget):
         )
 
         self.value_field = QLineEdit(
-            f"{self.value:.2f}",
+            f"{self.value:.{self.decimals}f}",
         )
 
         self.value_field.setAlignment(
@@ -157,7 +159,7 @@ class ViewBox(QWidget):
         self.value = value
 
         self.value_field.setText(
-            f"{value:.2f}"
+            f"{value:.{self.decimals}f}"
         )
 
         if emit_signal:

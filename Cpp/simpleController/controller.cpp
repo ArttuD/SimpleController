@@ -95,6 +95,7 @@ std::vector<ReferencePoint> buildSequence(const ControlConfig &config)
         const std::size_t widthSamples = std::min(periodSamples, std::max<std::size_t>(1, sampleCount(config.pulse_width, rate)));
         const std::size_t pauseSamples = sampleCount(config.post_sequence_pause, rate);
         const std::size_t cycles = static_cast<std::size_t>(std::max(0, config.pulse_cycles));
+
         if (cycles * periodSamples + pauseSamples > maxSequenceSamples) {
             throw std::length_error("Sequence exceeds the 50-million-sample limit");
         }

@@ -1,5 +1,6 @@
 import sys
 import logging
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 
@@ -125,8 +126,12 @@ class MainWindow(QMainWindow):
         self.kp.value_changed.connect(self.update_gains)
         self.ki.value_changed.connect(self.update_gains)
 
+        self.r_shunt_box = ViewBox("r_shunt","R shunt","ohm",self.niClient.config.r_shunt,editable=True,decimals=4,)
+        self.r_shunt_box.value_changed.connect(self.update_r_shunt)
+
         pi_layout.addWidget(self.kp)
         pi_layout.addWidget(self.ki)
+        pi_layout.addWidget(self.r_shunt_box)
 
         control_layout.addLayout(pi_layout)
 
@@ -212,7 +217,19 @@ class MainWindow(QMainWindow):
 
     def apply_settings(self,config,filename,):
 
+        previous = self.niClient.config
         self.niClient.update_config(config)
+        current = self.niClient.config
+
+        changes = [f"{field.name}: {getattr(previous, field.name)} -> {getattr(current, field.name)}" for field in fields(current) if getattr(previous, field.name) != getattr(current, field.name)]
+
+        for change in changes:
+            self.logger.info("Setting changed: %s",change,)
+
+        if changes:
+            self.print_status("Changed: " + ", ".join(changes))
+
+        self.r_shunt_box.set_value(current.r_shunt)
         self.saverClient.start(filename)
         self.print_status(f"Settings applied; CSV: {filename}")
 
@@ -259,6 +276,18 @@ class MainWindow(QMainWindow):
 
         self.niClient.update_PI_coefs(kp,ki,)
         self.logger.info("PI updated: Kp=%.4f Ki=%.4f",kp,ki,)
+
+    def update_r_shunt(self,value,):
+
+        if value <= 0.0:
+            self.print_status("Shunt resistance must be positive")
+            self.r_shunt_box.set_value(self.niClient.config.r_shunt)
+            return
+
+        self.niClient.update_r_shunt(value)
+        self.settings_widget.fields["r_shunt"].setText(str(value))
+        self.logger.info("Shunt resistance updated: %.6f ohm",value,)
+        self.print_status(f"Shunt resistance set to {value:g} ohm")
 
 
     def update_plot(self,reference_1,measurement_1,reference_2,measurement_2,timestamp,):

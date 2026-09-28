@@ -45,10 +45,6 @@ HIGH_PRIORITY_CLASS = 0x00000080
 NORMAL_PRIORITY_CLASS = 0x00000020
 
 
-# ============================================================
-# Hardware configuration
-# ============================================================
-
 @dataclass(frozen=True, slots=True)
 class ControlConfig:
     """All runtime tuning values used by the NI control worker."""
@@ -790,6 +786,12 @@ class NiClientWorker(QObject):
 
         self.logger.info("PI coefficients updated: Kp=%.4f Ki=%.4f",kp,ki,)
 
+    @pyqtSlot(float)
+    def set_r_shunt(self,r_shunt,):
+
+        self.inv_r_shunt = 1.0 / float(r_shunt)
+        self.logger.info("Shunt resistance updated: %.6f ohm",r_shunt,)
+
 
 
 class NiClient(QObject):
@@ -801,6 +803,7 @@ class NiClient(QObject):
     manual_control_signal = pyqtSignal(bool)
     currents_feed_signal = pyqtSignal(float,float,)
     PI_coefs_signal = pyqtSignal(float,float,)
+    r_shunt_signal = pyqtSignal(float)
 
     error = pyqtSignal(str)
     status_changed = pyqtSignal(bool)
@@ -849,6 +852,7 @@ class NiClient(QObject):
         self.manual_control_signal.connect(self.worker.set_manual_control,type=Qt.ConnectionType.DirectConnection,)
         self.currents_feed_signal.connect(self.worker.set_currents_feed,type=Qt.ConnectionType.DirectConnection,)
         self.PI_coefs_signal.connect(self.worker.set_PI_coefs,type=Qt.ConnectionType.DirectConnection,)
+        self.r_shunt_signal.connect(self.worker.set_r_shunt,type=Qt.ConnectionType.DirectConnection,)
 
 
         self.worker.error.connect(self.error,)
@@ -858,7 +862,8 @@ class NiClient(QObject):
 
         self.worker.finished.connect(self._worker_finished,)
         self.thread.finished.connect(self._thread_finished,)
-        self.worker.finished.connect(self.thread.quit,)
+        # Direct: shutdown() blocks the GUI thread in wait(), so a queued quit would never run.
+        self.worker.finished.connect(self.thread.quit,type=Qt.ConnectionType.DirectConnection,)
         self.worker.finished.connect(self.worker.deleteLater,)
         self.thread.finished.connect(self.thread.deleteLater,)
         self.thread.start()
@@ -873,6 +878,10 @@ class NiClient(QObject):
 
     @pyqtSlot()
     def _thread_finished(self):
+
+        # A replaced worker's thread can finish after its successor was created.
+        if self.sender() is not self.thread:
+            return
 
         self.logger.info("NI worker thread finished")
 
@@ -912,8 +921,8 @@ class NiClient(QObject):
 
         was_running = (self.worker is not None and self.worker.running)
 
-        if was_running:
-            self.shutdown()
+        # The worker caches the config at construction, so it must always be replaced.
+        self.shutdown()
 
         self.config = replace(config, kp=self.kp, ki=self.ki)
         self._create_worker()
@@ -956,18 +965,40 @@ class NiClient(QObject):
 
         self.PI_coefs_signal.emit(self.kp,self.ki,)
 
+    def update_r_shunt(self,r_shunt,):
+
+        r_shunt = float(r_shunt)
+        self.config = replace(self.config, r_shunt=r_shunt)
+
+        self.r_shunt_signal.emit(r_shunt)
+
+    def _disconnect_worker(self):
+
+        for signal in (self.start_signal,self.stop_signal,self.manual_control_signal,self.currents_feed_signal,self.PI_coefs_signal,self.r_shunt_signal,):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+
     def shutdown(self):
 
         self.logger.info("NI shutdown requested")
 
-        if self.worker is not None:
-            self.stop_signal.emit()
-
+        worker = self.worker
         thread = self.thread
 
         if thread is not None and self._thread_is_running():
-            thread.quit()
-            thread.wait(2000)
+
+            if worker is not None and worker.running:
+                # _finalize zeroes the outputs, closes the tasks and then quits the thread.
+                self.stop_signal.emit()
+            else:
+                thread.quit()
+
+            if not thread.wait(3000):
+                self.logger.warning("NI worker thread did not stop within 3 s")
+
+        self._disconnect_worker()
 
         self.worker = None
         self.thread = None
