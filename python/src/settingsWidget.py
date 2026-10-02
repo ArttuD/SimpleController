@@ -29,7 +29,8 @@ class SettingsWidget(QWidget):
         ("sample_rate", "Sample rate [Hz]", float),
         ("ai_buffer_size", "AI buffer size", int),
         ("ai_read_batch_size", "AI/AO batch size", int),
-        ("r_shunt", "Shunt resistance [ohm]", float),
+        ("r_shunt_1", "Shunt 1 resistance [ohm]", float),
+        ("r_shunt_2", "Shunt 2 resistance [ohm]", float),
         ("min_voltage", "Minimum voltage [V]", float),
         ("max_voltage", "Maximum voltage [V]", float),
         ("measurement_filter_hz", "Measurement filter [Hz] (0 = off)", float),
@@ -153,8 +154,10 @@ class SettingsWidget(QWidget):
                 raise ValueError("Batch size must be positive")
             if values["visualization_rate"] <= 0.0:
                 raise ValueError("Visualization rate must be positive")
-            if values["r_shunt"] <= 0.0:
-                raise ValueError("Shunt resistance must be positive")
+            if values["r_shunt_1"] <= 0.0:
+                raise ValueError("Shunt 1 resistance must be positive")
+            if values["r_shunt_2"] <= 0.0:
+                raise ValueError("Shunt 2 resistance must be positive")
             if values["measurement_filter_hz"] < 0.0:
                 raise ValueError("Measurement filter cannot be negative")
             if not self.filename.text().strip():

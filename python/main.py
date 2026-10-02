@@ -129,13 +129,17 @@ class MainWindow(QMainWindow):
         self.kff_box = ViewBox("kff","Kff","V/A",self.niClient.config.kff,editable=True,decimals=4,)
         self.kff_box.value_changed.connect(self.update_kff)
 
-        self.r_shunt_box = ViewBox("r_shunt","R shunt","ohm",self.niClient.config.r_shunt,editable=True,decimals=4,)
-        self.r_shunt_box.value_changed.connect(self.update_r_shunt)
+        self.r_shunt_box_1= ViewBox("r_shunt_1","R shunt 1","ohm",self.niClient.config.r_shunt_1,editable=True,decimals=4,)
+        self.r_shunt_box_1.value_changed.connect(self.update_r_shunt_1)
+
+        self.r_shunt_box_2= ViewBox("r_shunt_2","R shunt 2","ohm",self.niClient.config.r_shunt_2,editable=True,decimals=4,)
+        self.r_shunt_box_2.value_changed.connect(self.update_r_shunt_2)
 
         pi_layout.addWidget(self.kp)
         pi_layout.addWidget(self.ki)
         pi_layout.addWidget(self.kff_box)
-        pi_layout.addWidget(self.r_shunt_box)
+        pi_layout.addWidget(self.r_shunt_box_1)
+        pi_layout.addWidget(self.r_shunt_box_2)
 
         control_layout.addLayout(pi_layout)
 
@@ -287,17 +291,29 @@ class MainWindow(QMainWindow):
         self.logger.info("Feedforward updated: Kff=%.4f V/A",value,)
         self.print_status(f"Feedforward set to {value:g} V/A")
 
-    def update_r_shunt(self,value,):
+    def update_r_shunt_1(self,value,):
 
         if value <= 0.0:
-            self.print_status("Shunt resistance must be positive")
-            self.r_shunt_box.set_value(self.niClient.config.r_shunt)
+            self.print_status("Shunt 1 resistance must be positive")
+            self.r_shunt_box_1.set_value(self.niClient.config.r_shunt_1)
             return
 
-        self.niClient.update_r_shunt(value)
-        self.settings_widget.fields["r_shunt"].setText(str(value))
+        self.niClient.update_r_shunt_1(value)
+        self.settings_widget.fields["r_shunt_1"].setText(str(value))
         self.logger.info("Shunt resistance updated: %.6f ohm",value,)
-        self.print_status(f"Shunt resistance set to {value:g} ohm")
+        self.print_status(f"Shunt 1 resistance set to {value:g} ohm")
+        
+    def update_r_shunt_2(self,value,):
+
+        if value <= 0.0:
+            self.print_status("Shunt 2 resistance must be positive")
+            self.r_shunt_box_2.set_value(self.niClient.config.r_shunt_2)
+            return
+
+        self.niClient.update_r_shunt_2(value)
+        self.settings_widget.fields["r_shunt_2"].setText(str(value))
+        self.logger.info("Shunt 2 resistance updated: %.6f ohm",value,)
+        self.print_status(f"Shunt 2 resistance set to {value:g} ohm")
 
 
     def update_plot(self,reference_1,measurement_1,reference_2,measurement_2,timestamp,):

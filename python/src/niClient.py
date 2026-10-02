@@ -57,20 +57,21 @@ class ControlConfig:
 
     # Acquisition runs fast for data fidelity; control updates once per batch.
     # Raise sample_rate and ai_read_batch_size together to keep the control rate fixed.
-    sample_rate: float = 1000.0 # Hardware AI sample rate
+    sample_rate: float = 10000.0 # Hardware AI sample rate
     sequence_type: str = "Oscillatory test"
 
     # 50 s of AI backlog absorbs transient Windows stalls without overflowing.
     ai_buffer_size: int = 100000
-    ai_read_batch_size: int = 1
+    ai_read_batch_size: int = 10
 
-    r_shunt: float = 0.12
+    r_shunt_1: float = 0.12
+    r_shunt_2: float = 0.12
     min_voltage: float = -10.0
     max_voltage: float = 10.0
 
     kp: float = 20.0
     ki: float = 10.0
-    kff: float = 0.0 # Feedforward [V/A], ideally 1 / amplifier gain
+    kff: float = 4.0 # Feedforward [V/A], ideally 1 / amplifier gain
     measurement_filter_hz: float = 0.0 # Low-pass on the controlled current, 0 = off
 
     peak_amplitude_POS: float = 2.0
@@ -210,8 +211,11 @@ class NiClientWorker(QObject):
         self.batch_size = self.config.ai_read_batch_size
         self.control_dt = self.config.control_dt
         self.control_period = self.batch_size * self.control_dt
+
         self.late_threshold = 2.0 * self.control_period
-        self.inv_r_shunt = 1.0 / self.config.r_shunt
+        self.inv_r_shunt_1 = 1.0 / self.config.r_shunt_1
+        self.inv_r_shunt_2 = 1.0 / self.config.r_shunt_2
+
         self.kff = self.config.kff
 
         filter_hz = self.config.measurement_filter_hz
@@ -484,9 +488,10 @@ class NiClientWorker(QObject):
             read_ended = perf_counter()
 
             means = self.ai_data.mean(axis=1).tolist()
-            inv_r_shunt = self.inv_r_shunt
-            measurement_1 = means[0] * inv_r_shunt
-            measurement_2 = means[1] * inv_r_shunt
+            inv_r_shunt_1 = self.inv_r_shunt_1
+            inv_r_shunt_2 = self.inv_r_shunt_2
+            measurement_1 = means[0] * inv_r_shunt_1
+            measurement_2 = means[1] * inv_r_shunt_2
 
             filter_alpha = self.filter_alpha
             self.filtered_1 += filter_alpha * (measurement_1 - self.filtered_1)
@@ -541,9 +546,9 @@ class NiClientWorker(QObject):
 
             log_buffer[0, fill:end] = self.iteration_count * self.control_dt + self.sample_offsets
             log_buffer[1, fill:end] = log_reference_1
-            log_buffer[2, fill:end] = ai_data[0] * inv_r_shunt
+            log_buffer[2, fill:end] = ai_data[0] * inv_r_shunt_1
             log_buffer[3, fill:end] = log_reference_2
-            log_buffer[4, fill:end] = ai_data[1] * inv_r_shunt
+            log_buffer[4, fill:end] = ai_data[1] * inv_r_shunt_2
             log_buffer[5, fill:end] = ao_data[0]
             log_buffer[6, fill:end] = ao_data[1]
             self.log_fill = end
@@ -818,10 +823,15 @@ class NiClientWorker(QObject):
         self.logger.info("PI coefficients updated: Kp=%.4f Ki=%.4f",kp,ki,)
 
     @pyqtSlot(float)
-    def set_r_shunt(self,r_shunt,):
+    def set_r_shunt_1(self,r_shunt,):
 
-        self.inv_r_shunt = 1.0 / float(r_shunt)
-        self.logger.info("Shunt resistance updated: %.6f ohm",r_shunt,)
+        self.inv_r_shunt_1 = 1.0 / float(r_shunt)
+        self.logger.info("Shunt 1 resistance updated: %.6f ohm",r_shunt,)
+
+    def set_r_shunt_2(self,r_shunt,):
+
+        self.inv_r_shunt_2 = 1.0 / float(r_shunt)
+        self.logger.info("Shunt 2 resistance updated: %.6f ohm",r_shunt,)
 
     @pyqtSlot(float)
     def set_kff(self,kff,):
@@ -840,7 +850,8 @@ class NiClient(QObject):
     manual_control_signal = pyqtSignal(bool)
     currents_feed_signal = pyqtSignal(float,float,)
     PI_coefs_signal = pyqtSignal(float,float,)
-    r_shunt_signal = pyqtSignal(float)
+    r_shunt_1_signal = pyqtSignal(float)
+    r_shunt_2_signal = pyqtSignal(float)
     kff_signal = pyqtSignal(float)
 
     error = pyqtSignal(str)
@@ -891,7 +902,8 @@ class NiClient(QObject):
         self.manual_control_signal.connect(self.worker.set_manual_control,type=Qt.ConnectionType.DirectConnection,)
         self.currents_feed_signal.connect(self.worker.set_currents_feed,type=Qt.ConnectionType.DirectConnection,)
         self.PI_coefs_signal.connect(self.worker.set_PI_coefs,type=Qt.ConnectionType.DirectConnection,)
-        self.r_shunt_signal.connect(self.worker.set_r_shunt,type=Qt.ConnectionType.DirectConnection,)
+        self.r_shunt_1_signal.connect(self.worker.set_r_shunt_1,type=Qt.ConnectionType.DirectConnection,)
+        self.r_shunt_2_signal.connect(self.worker.set_r_shunt_2,type=Qt.ConnectionType.DirectConnection,)
         self.kff_signal.connect(self.worker.set_kff,type=Qt.ConnectionType.DirectConnection,)
 
 
@@ -1006,12 +1018,19 @@ class NiClient(QObject):
 
         self.PI_coefs_signal.emit(self.kp,self.ki,)
 
-    def update_r_shunt(self,r_shunt,):
+    def update_r_shunt_1(self,r_shunt,):
 
         r_shunt = float(r_shunt)
-        self.config = replace(self.config, r_shunt=r_shunt)
+        self.config = replace(self.config, r_shunt_1=r_shunt)
 
-        self.r_shunt_signal.emit(r_shunt)
+        self.r_shunt_1_signal.emit(r_shunt)
+
+    def update_r_shunt_2(self,r_shunt,):
+
+        r_shunt = float(r_shunt)
+        self.config = replace(self.config, r_shunt_2=r_shunt)
+
+        self.r_shunt_2_signal.emit(r_shunt)
 
     def update_kff(self,kff,):
 
@@ -1022,7 +1041,7 @@ class NiClient(QObject):
 
     def _disconnect_worker(self):
 
-        for signal in (self.start_signal,self.stop_signal,self.manual_control_signal,self.currents_feed_signal,self.PI_coefs_signal,self.r_shunt_signal,self.kff_signal,):
+        for signal in (self.start_signal,self.stop_signal,self.manual_control_signal,self.currents_feed_signal,self.PI_coefs_signal,self.r_shunt_1_signal,self.r_shunt_2_signal,self.kff_signal,):
             try:
                 signal.disconnect()
             except TypeError:
