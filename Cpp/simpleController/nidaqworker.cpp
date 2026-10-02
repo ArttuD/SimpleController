@@ -38,7 +38,8 @@ void NiDaqWorker::setConfig(const ControlConfig &config)
     m_kp.store(config.kp, std::memory_order_relaxed);
     m_ki.store(config.ki, std::memory_order_relaxed);
     m_kff.store(config.kff, std::memory_order_relaxed);
-    m_inverseShunt.store(1.0 / config.r_shunt, std::memory_order_relaxed);
+    m_inverseShunt_1.store(1.0 / config.r_shunt_1, std::memory_order_relaxed);
+    m_inverseShunt_2.store(1.0 / config.r_shunt_2, std::memory_order_relaxed);
 }
 
 void NiDaqWorker::setManualControl(bool enabled) noexcept
@@ -70,9 +71,14 @@ void NiDaqWorker::setKff(double kff) noexcept
     m_kff.store(kff, std::memory_order_relaxed);
 }
 
-void NiDaqWorker::setRShunt(double rShunt) noexcept
+void NiDaqWorker::setRShunt_1(double rShunt_1) noexcept
 {
-    m_inverseShunt.store(1.0 / rShunt, std::memory_order_relaxed);
+    m_inverseShunt_1.store(1.0 / rShunt_1, std::memory_order_relaxed);
+}
+
+void NiDaqWorker::setRShunt_2(double rShunt_2) noexcept
+{
+    m_inverseShunt_2.store(1.0 / rShunt_2, std::memory_order_relaxed);
 }
 
 void NiDaqWorker::prepareForStart() noexcept
@@ -97,7 +103,8 @@ void NiDaqWorker::run()
 
         m_controlDt = 1.0 / config.sample_rate;
         m_controlPeriod = batchSize * m_controlDt;
-        m_inverseShunt.store(1.0 / config.r_shunt, std::memory_order_relaxed);
+        m_inverseShunt_1.store(1.0 / config.r_shunt_1, std::memory_order_relaxed);
+        m_inverseShunt_2.store(1.0 / config.r_shunt_2, std::memory_order_relaxed);
         m_filterAlpha = config.measurement_filter_hz > 0.0 ? 1.0 - std::exp(-2.0 * 3.14159265358979323846 * config.measurement_filter_hz * m_controlPeriod) : 1.0;
         m_filtered1 = 0.0;
         m_filtered2 = 0.0;
@@ -240,9 +247,10 @@ int NiDaqWorker::processSamples() noexcept
         sum1 += m_aiData[static_cast<std::size_t>(sample)];
         sum2 += m_aiData[static_cast<std::size_t>(batchSize + sample)];
     }
-    const double inverseShunt = m_inverseShunt.load(std::memory_order_relaxed);
-    const double measurement1 = sum1 / batchSize * inverseShunt;
-    const double measurement2 = sum2 / batchSize * inverseShunt;
+    const double inverseShunt_1 = m_inverseShunt_1.load(std::memory_order_relaxed);
+    const double inverseShunt_2 = m_inverseShunt_2.load(std::memory_order_relaxed);
+    const double measurement1 = sum1 / batchSize * inverseShunt_1;
+    const double measurement2 = sum2 / batchSize * inverseShunt_2;
     m_filtered1 += m_filterAlpha * (measurement1 - m_filtered1);
     m_filtered2 += m_filterAlpha * (measurement2 - m_filtered2);
     const ReferencePoint reference = manual
@@ -283,9 +291,9 @@ int NiDaqWorker::processSamples() noexcept
         const std::size_t dataIndex = static_cast<std::size_t>(sample);
         m_logBatch.append(startTime + static_cast<double>(sample) * m_controlDt);
         m_logBatch.append(loggedReference.first);
-        m_logBatch.append(m_aiData[dataIndex] * inverseShunt);
+        m_logBatch.append(m_aiData[dataIndex] * inverseShunt_1);
         m_logBatch.append(loggedReference.second);
-        m_logBatch.append(m_aiData[static_cast<std::size_t>(batchSize) + dataIndex] * inverseShunt);
+        m_logBatch.append(m_aiData[static_cast<std::size_t>(batchSize) + dataIndex] * inverseShunt_2);
         m_logBatch.append(m_outputData[0]);
         m_logBatch.append(m_outputData[1]);
     }

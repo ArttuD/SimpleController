@@ -41,6 +41,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     auto *stopButton = new QPushButton(QStringLiteral("Stop"), graphPage);
     auto *clearButton = new QPushButton(QStringLiteral("Clear"), graphPage);
     auto *closeButton = new QPushButton(QStringLiteral("Close"), graphPage);
+
     actions->addWidget(startButton);
     actions->addWidget(stopButton);
     actions->addWidget(clearButton);
@@ -73,7 +74,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     m_kp = new QDoubleSpinBox(piGroup);
     m_ki = new QDoubleSpinBox(piGroup);
     m_kff = new QDoubleSpinBox(piGroup);
-    m_rShunt = new QDoubleSpinBox(piGroup);
+
+    m_rShunt_1 = new QDoubleSpinBox(piGroup);
+    m_rShunt_2 = new QDoubleSpinBox(piGroup);
+
     for (auto *spin : {m_kp, m_ki}) {
         spin->setRange(-100000.0, 100000.0);
         spin->setDecimals(4);
@@ -83,22 +87,32 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     m_kff->setDecimals(4);
     m_kff->setSingleStep(0.01);
     m_kff->setSuffix(QStringLiteral(" V/A"));
-    m_rShunt->setRange(0.000001, 1000.0);
-    m_rShunt->setDecimals(6);
-    m_rShunt->setSingleStep(0.001);
-    m_rShunt->setSuffix(QStringLiteral(" ohm"));
+
+    m_rShunt_1->setRange(0.000001, 1000.0);
+    m_rShunt_1->setDecimals(6);
+    m_rShunt_1->setSingleStep(0.001);
+    m_rShunt_1->setSuffix(QStringLiteral(" ohm"));
+
+    m_rShunt_2->setRange(0.000001, 1000.0);
+    m_rShunt_2->setDecimals(6);
+    m_rShunt_2->setSingleStep(0.001);
+    m_rShunt_2->setSuffix(QStringLiteral(" ohm"));
+
     // Otherwise every keystroke reaches the hardware, e.g. typing 20 sends 2 first.
-    for (auto *spin : {m_kp, m_ki, m_kff, m_rShunt}) {
+    for (auto *spin : {m_kp, m_ki, m_kff, m_rShunt_1}) {
         spin->setKeyboardTracking(false);
     }
     m_kp->setValue(m_config.kp);
     m_ki->setValue(m_config.ki);
     m_kff->setValue(m_config.kff);
-    m_rShunt->setValue(m_config.r_shunt);
+    m_rShunt_1->setValue(m_config.r_shunt_1);
+    m_rShunt_2->setValue(m_config.r_shunt_2);
+
     piForm->addRow(QStringLiteral("Kp"), m_kp);
     piForm->addRow(QStringLiteral("Ki"), m_ki);
     piForm->addRow(QStringLiteral("Kff"), m_kff);
-    piForm->addRow(QStringLiteral("R shunt"), m_rShunt);
+    piForm->addRow(QStringLiteral("R shunt 1"), m_rShunt_1);
+    piForm->addRow(QStringLiteral("R shunt 2"), m_rShunt_2);
     controlRow->addWidget(piGroup);
 
     auto *readoutGroup = new QGroupBox(QStringLiteral("Readout"), graphPage);
@@ -154,7 +168,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
     addRealEditor(QStringLiteral("Sample rate [Hz]"), &ControlConfig::sample_rate);
     addIntegerEditor(QStringLiteral("AI buffer size"), &ControlConfig::ai_buffer_size);
     addIntegerEditor(QStringLiteral("AI/AO batch size"), &ControlConfig::ai_read_batch_size);
-    addRealEditor(QStringLiteral("Shunt resistance [ohm]"), &ControlConfig::r_shunt);
+    addRealEditor(QStringLiteral("Shunt resistance 1 [ohm]"), &ControlConfig::r_shunt_1);
+    addRealEditor(QStringLiteral("Shunt resistance 2 [ohm]"), &ControlConfig::r_shunt_2);
     addRealEditor(QStringLiteral("Minimum voltage [V]"), &ControlConfig::min_voltage);
     addRealEditor(QStringLiteral("Maximum voltage [V]"), &ControlConfig::max_voltage);
     addRealEditor(QStringLiteral("Measurement filter [Hz] (0 = off)"), &ControlConfig::measurement_filter_hz);
@@ -222,16 +237,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_niWorker(), m_s
         m_niWorker.setKff(value);
         appendStatus(QStringLiteral("Feedforward set to %1 V/A").arg(value, 0, 'g', 6));
     });
-    connect(m_rShunt, &QDoubleSpinBox::valueChanged, this, [this](double value) {
-        m_niWorker.setRShunt(value);
+    connect(m_rShunt_1, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        m_niWorker.setRShunt_1(value);
         for (const ConfigEditor &editor : m_configEditors) {
-            if (editor.real == &ControlConfig::r_shunt) {
+            if (editor.real == &ControlConfig::r_shunt_1) {
                 editor.line->setText(QString::number(value, 'g', 12));
             }
         }
-        appendStatus(QStringLiteral("Shunt resistance set to %1 ohm").arg(value, 0, 'g', 6));
+        appendStatus(QStringLiteral("Shunt resistance 1 set to %1 ohm").arg(value, 0, 'g', 6));
     });
 
+    connect(m_rShunt_2, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        m_niWorker.setRShunt_2(value);
+        for (const ConfigEditor &editor : m_configEditors) {
+            if (editor.real == &ControlConfig::r_shunt_2) {
+                editor.line->setText(QString::number(value, 'g', 12));
+            }
+        }
+        appendStatus(QStringLiteral("Shunt resistance 2 set to %1 ohm").arg(value, 0, 'g', 6));
+    });
     connect(&m_niWorker, &NiDaqWorker::sampleUpdated, m_plot, &PlotWidget::appendSample);
     connect(&m_niWorker, &NiDaqWorker::sampleUpdated, this, [this](double, double measurement1, double, double measurement2, double) {
         m_measurement1->setText(QString::number(measurement1, 'f', 2) + QStringLiteral(" A"));
@@ -304,7 +328,7 @@ bool MainWindow::applySettings(bool restartIfRunning)
         appendStatus(QStringLiteral("Settings error: buffer size must be at least one positive batch"));
         return false;
     }
-    if (candidate.visualization_rate <= 0.0 || candidate.log_emit_interval <= 0.0 || candidate.sample_rate * candidate.log_emit_interval > 1000000.0 || candidate.r_shunt <= 0.0 || candidate.max_voltage <= candidate.min_voltage) {
+    if (candidate.visualization_rate <= 0.0 || candidate.log_emit_interval <= 0.0 || candidate.sample_rate * candidate.log_emit_interval > 1000000.0|| candidate.r_shunt_2 <= 0.0 || candidate.r_shunt_1 <= 0.0 || candidate.max_voltage <= candidate.min_voltage) {
         appendStatus(QStringLiteral("Settings error: rates, shunt resistance, and voltage range must be positive"));
         return false;
     }
@@ -338,10 +362,17 @@ bool MainWindow::applySettings(bool restartIfRunning)
     m_config = candidate;
     m_kp->setValue(m_config.kp);
     m_ki->setValue(m_config.ki);
+
     {
-        const QSignalBlocker blocker(m_rShunt);
-        m_rShunt->setValue(m_config.r_shunt);
+        const QSignalBlocker blocker(m_rShunt_1);
+        m_rShunt_1->setValue(m_config.r_shunt_1);
     }
+
+    {
+        const QSignalBlocker blocker(m_rShunt_2);
+        m_rShunt_2->setValue(m_config.r_shunt_2);
+    }
+
     m_niWorker.setConfig(m_config);
     m_saver->openFile(m_filename->text().trimmed());
     if (!changes.isEmpty()) {

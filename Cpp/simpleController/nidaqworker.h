@@ -24,7 +24,8 @@ public:
     void setManualReferences(double first, double second) noexcept;
     void setCoefficients(double kp, double ki) noexcept;
     void setKff(double kff) noexcept;
-    void setRShunt(double rShunt) noexcept;
+    void setRShunt_1(double rShunt_1) noexcept;
+    void setRShunt_2(double rShunt_2) noexcept;
     void prepareForStart() noexcept;
     void requestStop() noexcept;
     int processSamples() noexcept;
@@ -73,7 +74,8 @@ private:
     std::atomic<double> m_kp{20.0};
     std::atomic<double> m_ki{10.0};
     std::atomic<double> m_kff{0.0};
-    std::atomic<double> m_inverseShunt{1.0};
+    std::atomic<double> m_inverseShunt_1{1.0};
+    std::atomic<double> m_inverseShunt_2{1.0};
     std::mutex m_waitMutex;
     std::condition_variable m_finishedCondition;
     std::string m_callbackError;

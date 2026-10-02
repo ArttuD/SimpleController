@@ -55,16 +55,20 @@ private:
     QCheckBox *m_manualControl;
     QSlider *m_current1Slider;
     QSlider *m_current2Slider;
+
     QLabel *m_current1Value;
     QLabel *m_current2Value;
+
     QLabel *m_measurement1;
     QLabel *m_measurement2;
+
     QLabel *m_runStatus;
     QLabel *m_timingStatus;
     QDoubleSpinBox *m_kp;
     QDoubleSpinBox *m_ki;
     QDoubleSpinBox *m_kff;
-    QDoubleSpinBox *m_rShunt;
+    QDoubleSpinBox *m_rShunt_1;
+    QDoubleSpinBox *m_rShunt_2;
     QPlainTextEdit *m_softwareStatus;
     PlotWidget *m_plot;
 };
