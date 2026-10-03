@@ -2,7 +2,6 @@ import sys
 import logging
 from dataclasses import fields
 from datetime import datetime
-from pathlib import Path
 
 import pyqtgraph as pg
 
@@ -63,13 +62,14 @@ class MainWindow(QMainWindow):
         self.saverClient.status_changed.connect(self.saver_status_changed)
         self.saverClient.error.connect(self.saver_error)
         self.niClient.samples_updated.connect(self.saverClient.save_batch)
+        self._saving_run = False
+        self._close_saver_on_stop = False
+        self._start_in_progress = False
 
 
 
         self._setup_ui()
         self.clear_measurements()
-
-        self.saverClient.start(Path("data") / "measurements.csv")
 
 
     def _setup_ui(self,):
@@ -203,7 +203,17 @@ class MainWindow(QMainWindow):
 
 
         self.clear_measurements()
-        self.settings_widget.apply_settings()
+        self._close_saver_on_stop = False
+        self._start_in_progress = True
+        settings_valid = self.settings_widget.apply_settings()
+        self._start_in_progress = False
+
+        if not settings_valid:
+            return
+
+        self.saverClient.start(self.settings_widget.filename.text().strip())
+        self._saving_run = True
+        self._close_saver_on_stop = True
 
         manual_enabled = self.enable_manual.isChecked()
         self.niClient.set_manual_control(manual_enabled)
@@ -219,6 +229,7 @@ class MainWindow(QMainWindow):
         self.logger.info("Stop button pressed")
         self.print_status("Stopping controller")
 
+        self._close_saver_on_stop = self._saving_run
         self.niClient.stop_control()
         self.clear_measurements()
         self.reset_sliders()
@@ -237,9 +248,11 @@ class MainWindow(QMainWindow):
         if changes:
             self.print_status("Changed: " + ", ".join(changes))
 
-        self.r_shunt_box.set_value(current.r_shunt)
-        self.saverClient.start(filename)
-        self.print_status(f"Settings applied; CSV: {filename}")
+        self.r_shunt_box_1.set_value(current.r_shunt_1)
+        self.r_shunt_box_2.set_value(current.r_shunt_2)
+        if self._saving_run and not self._start_in_progress:
+            self.saverClient.start(filename)
+            self.print_status(f"Settings applied; CSV: {filename}")
 
     def on_manual_changed(self,enabled,):
 
@@ -403,6 +416,13 @@ class MainWindow(QMainWindow):
         self.print_status(f"NI status: {status_text}")
 
         self.status_label.value_field.setText(status_text)
+
+        if status:
+            self._close_saver_on_stop = False
+        elif self._close_saver_on_stop:
+            self.saverClient.close()
+            self._saving_run = False
+            self._close_saver_on_stop = False
 
     def saver_status_changed(self,message,):
 

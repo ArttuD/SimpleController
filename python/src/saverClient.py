@@ -102,6 +102,10 @@ class SaverClient(QObject):
 
         self._send(("open", str(path),), blocking=True)
 
+    def close(self):
+
+        self._send(("close", None,), blocking=True)
+
     def save_batch(self, batch):
 
         # Never block the control thread: a full queue costs a log gap, not a stall.

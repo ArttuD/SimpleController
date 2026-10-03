@@ -173,8 +173,10 @@ class SettingsWidget(QWidget):
             self.settings_changed.emit(config, filename)
             self.status_message.emit("Settings applied")
             self.message.setText("Settings applied")
+            return True
 
         except (TypeError, ValueError) as exc:
             message = f"Settings error: {exc}"
             self.status_message.emit(message)
             self.message.setText(message)
+            return False
