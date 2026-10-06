@@ -26,9 +26,9 @@ class SettingsWidget(QWidget):
         ("device_name", "Device name", str),
         ("ai_channel", "AI channel", str),
         ("ao_channel", "AO channel", str),
-        ("sample_rate", "Sample rate [Hz]", float),
+        ("sample_rate_AI", "AI sample rate [Hz]", float),
+        ("read_batch_size_AI", "AI batch size", int),
         ("ai_buffer_size", "AI buffer size", int),
-        ("ai_read_batch_size", "AI/AO batch size", int),
         ("r_shunt_1", "Shunt 1 resistance [ohm]", float),
         ("r_shunt_2", "Shunt 2 resistance [ohm]", float),
         ("min_voltage", "Minimum voltage [V]", float),
@@ -56,7 +56,6 @@ class SettingsWidget(QWidget):
         ("sine_periods", "Sine periods", float),
         ("post_sequence_pause", "Post-sequence pause [s]", float),
         ("visualization_rate", "Visualization rate [Hz]", float),
-        ("diagnostics_interval", "Diagnostics interval [s]", float),
         ("pulse_amplitude", "Pulse amplitude [A]", float),
         ("pulse_period", "Pulse period [s]", float),
         ("pulse_width", "Pulse width [s]", float),
@@ -146,11 +145,11 @@ class SettingsWidget(QWidget):
                 else:
                     values[name] = value_type(text)
 
-            if values["sample_rate"] <= 0.0:
+            if values["sample_rate_AI"] <= 0.0:
                 raise ValueError("Sample rate must be positive")
-            if values["ai_buffer_size"] < values["ai_read_batch_size"]:
+            if values["ai_buffer_size"] < values["read_batch_size_AI"]:
                 raise ValueError("AI buffer must be at least one batch")
-            if values["ai_read_batch_size"] <= 0:
+            if values["read_batch_size_AI"] <= 0:
                 raise ValueError("Batch size must be positive")
             if values["visualization_rate"] <= 0.0:
                 raise ValueError("Visualization rate must be positive")

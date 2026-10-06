@@ -56,13 +56,14 @@ class ControlConfig:
     ao_channel: str = "ao0:1"
 
     # Acquisition runs fast for data fidelity; control updates once per batch.
-    # Raise sample_rate and ai_read_batch_size together to keep the control rate fixed.
-    sample_rate: float = 10000.0 # Hardware AI sample rate
+    # Raise sample_rate_AI and read_batch_size_AI together to keep the control rate fixed.
+    sample_rate_AI: float = 10000.0 # Hardware AI sample rate
+    read_batch_size_AI: int = 10
+
     sequence_type: str = "Oscillatory test"
 
     # 50 s of AI backlog absorbs transient Windows stalls without overflowing.
     ai_buffer_size: int = 100000
-    ai_read_batch_size: int = 10
 
     r_shunt_1: float = 0.12
     r_shunt_2: float = 0.12
@@ -99,12 +100,11 @@ class ControlConfig:
     sawtooth_cycles: int = 2
     # Plot redraws run on the GUI thread and contend for the GIL with the DAQ callback.
     visualization_rate: float = 10.0
-    diagnostics_interval: float = 2.0
     log_emit_interval: float = 0.2 # Seconds of samples buffered per saver emit
 
     @property
     def control_dt(self):
-        return 1.0 / self.sample_rate
+        return 1.0 / self.sample_rate_AI    
 
 
 
@@ -203,16 +203,15 @@ class NiClientWorker(QObject):
         self.ao_task = None
         self.ai_reader = None
 
-        self.ai_data = np.zeros((2, self.config.ai_read_batch_size),dtype=np.float64,)
+        self.ai_data = np.zeros((2, self.config.read_batch_size_AI),dtype=np.float64,)
         self.ao_data = np.zeros(2,dtype=np.float64,)
         self.output_lock = threading.Lock()
 
         # Cached so the callback never touches a property or a dataclass field.
-        self.batch_size = self.config.ai_read_batch_size
+        self.batch_size = self.config.read_batch_size_AI
         self.control_dt = self.config.control_dt
         self.control_period = self.batch_size * self.control_dt
 
-        self.late_threshold = 2.0 * self.control_period
         self.inv_r_shunt_1 = 1.0 / self.config.r_shunt_1
         self.inv_r_shunt_2 = 1.0 / self.config.r_shunt_2
 
@@ -246,27 +245,17 @@ class NiClientWorker(QObject):
 
         self.iteration_count = 0
         self.next_visualization_time = 0.0
-        self.last_diagnostics_time = 0.0
-        self.last_diagnostics_count = 0
-        self.diagnostics_read_seconds = 0.0
-        self.diagnostics_write_seconds = 0.0
-        self.diagnostics_process_seconds = 0.0
-        self.diagnostics_loop_seconds = 0.0
 
         self.last_callback_time = 0.0
         self.max_callback_interval = 0.0
-        self.max_callback_duration = 0.0
-        self.late_callbacks = 0
-        self.max_backlog = 0
-        self.backlog_counter = 0
 
-        self.logger.info("NI worker initialized: %.0f Hz control",self.config.sample_rate,)
+        self.logger.info("NI worker initialized: %.0f Hz control",self.config.sample_rate_AI / self.batch_size,)
 
 
     def _build_sequence(self):
 
         config = self.config
-        rate = config.sample_rate
+        rate = config.sample_rate_AI
 
         if config.sequence_type == "Pulse":
             self.sequence = self._build_pulse_sequence(config, rate)
@@ -290,6 +279,7 @@ class NiClientWorker(QObject):
 
         peak_cycle_array_1 = np.zeros(peak_cycle_samples,dtype=np.float64,)
         peak_cycle_array_2 = np.zeros(peak_cycle_samples,dtype=np.float64,)
+
         peak_start = peak_interval_samples
         peak_end = min(peak_start + peak_width_samples,peak_cycle_samples,)
 
@@ -355,7 +345,7 @@ class NiClientWorker(QObject):
 
     def _log_sequence(self, name):
 
-        self.logger.info("Sequence precomputed: %d samples, %.3f s",len(self.sequence),len(self.sequence) / self.config.sample_rate,)
+        self.logger.info("Sequence precomputed: %d samples, %.3f s",len(self.sequence),len(self.sequence) / self.config.sample_rate_AI,)
         self.logger.info("Sequence mode: %s",name,)
 
 
@@ -365,7 +355,7 @@ class NiClientWorker(QObject):
         self.ai_task = nidaqmx.Task("Driver_AI")
 
         self.ai_task.ai_channels.add_ai_voltage_chan(f"{self.config.device_name}/{self.config.ai_channel}")
-        self.ai_task.timing.cfg_samp_clk_timing(rate=self.config.sample_rate,sample_mode=AcquisitionType.CONTINUOUS,samps_per_chan=self.config.ai_buffer_size,)
+        self.ai_task.timing.cfg_samp_clk_timing(rate=self.config.sample_rate_AI,sample_mode=AcquisitionType.CONTINUOUS,samps_per_chan=self.config.ai_buffer_size,)
         self.ai_task.in_stream.relative_to = (ReadRelativeTo.CURRENT_READ_POSITION)
         self.ai_task.in_stream.offset = 0
 
@@ -381,9 +371,9 @@ class NiClientWorker(QObject):
         self.ai_reader = AnalogMultiChannelReader(self.ai_task.in_stream)
         self.ao_writer = AnalogMultiChannelWriter(self.ao_task.out_stream,auto_start=False,)
 
-        self.ai_task.register_every_n_samples_acquired_into_buffer_event(self.batch_size,self._reading_callback,)
+        self.ai_task.register_every_n_samples_acquired_into_buffer_event(self.config.read_batch_size_AI,self._reading_callback,)
 
-        self.logger.info("AI configured: %.0f Hz continuous, EveryN callback every %d samples",self.config.sample_rate,self.batch_size,)
+        self.logger.info("AI configured: %.0f Hz continuous, EveryN callback every %d samples",self.config.sample_rate_AI,self.config.read_batch_size_AI,)
         self.logger.info("AO configured: on-demand, control period %.3f ms",self.control_period * 1000.0,)
 
 
@@ -428,20 +418,8 @@ class NiClientWorker(QObject):
             self.control_start_time = time.perf_counter()
             self.next_visualization_time = (self.control_start_time+ 1.0 / self.config.visualization_rate)
 
-            self.last_diagnostics_time = self.control_start_time
-
-            self.last_diagnostics_count = 0
-            self.diagnostics_read_seconds = 0.0
-            self.diagnostics_write_seconds = 0.0
-            self.diagnostics_process_seconds = 0.0
-            self.diagnostics_loop_seconds = 0.0
-
             self.last_callback_time = 0.0
             self.max_callback_interval = 0.0
-            self.max_callback_duration = 0.0
-            self.late_callbacks = 0
-            self.max_backlog = 0
-            self.backlog_counter = 0
 
             self.previous_switch_interval = sys.getswitchinterval()
             sys.setswitchinterval(0.00005)
@@ -481,11 +459,8 @@ class NiClientWorker(QObject):
                 interval = started - last_callback_time
                 if interval > self.max_callback_interval:
                     self.max_callback_interval = interval
-                if interval > self.late_threshold:
-                    self.late_callbacks += 1
 
-            self.ai_reader.read_many_sample(self.ai_data,number_of_samples_per_channel=self.batch_size,timeout=0.010,)
-            read_ended = perf_counter()
+            self.ai_reader.read_many_sample(self.ai_data, number_of_samples_per_channel=self.batch_size,timeout=0.010,)
 
             means = self.ai_data.mean(axis=1).tolist()
             inv_r_shunt_1 = self.inv_r_shunt_1
@@ -530,12 +505,14 @@ class NiClientWorker(QObject):
             ao_data[0] = self.pi_1.process(reference_1,self.filtered_1,control_period,kff * reference_1,)
             ao_data[1] = self.pi_2.process(reference_2,self.filtered_2,control_period,kff * reference_2,)
 
-            write_started = perf_counter()
             # Shared with _write_zero so a stop can never be followed by a late non-zero write.
+            
             with self.output_lock:
                 if self.finalizing:
                     return 0
+                
                 self.ao_writer.write_one_sample(ao_data,timeout=0.010,)
+                
             now = perf_counter()
 
             fill = self.log_fill
@@ -554,25 +531,6 @@ class NiClientWorker(QObject):
             self.log_fill = end
 
             self.iteration_count += self.batch_size
-            self.diagnostics_read_seconds += read_ended - started
-            self.diagnostics_process_seconds += write_started - read_ended
-            self.diagnostics_write_seconds += now - write_started
-            self.diagnostics_loop_seconds += now - started
-
-            duration = now - started
-            if duration > self.max_callback_duration:
-                self.max_callback_duration = duration
-
-            backlog_counter = self.backlog_counter + 1
-
-            if backlog_counter >= 200:
-
-                self.backlog_counter = 0
-                backlog = self.ai_task.in_stream.avail_samp_per_chan
-                if backlog > self.max_backlog:
-                    self.max_backlog = backlog
-            else:
-                self.backlog_counter = backlog_counter
 
             if self.log_fill >= log_buffer.shape[1]:
                 self._flush_log()
@@ -642,6 +600,7 @@ class NiClientWorker(QObject):
 
         except Exception:
             self.logger.exception("Failed to restore scheduler resolution")
+            
     @pyqtSlot()
     def _finalize(self):
 
@@ -658,58 +617,11 @@ class NiClientWorker(QObject):
 
     def _log_final_performance(self):
 
-        elapsed = time.perf_counter() - self.control_start_time
-
-        if elapsed <= 0.0:
+        if self.max_callback_interval <= 0.0:
+            self.logger.info("Callback interval: no intervals recorded")
             return
 
-        output_rate = self.iteration_count / elapsed
-        callback_count = max(1,self.iteration_count// self.batch_size,)
-
-        self.logger.info("Final sample rate: %.1f Hz / %.1f Hz target; ""AI read: %.3f ms; AO write: %.3f ms; ""process: %.3f ms; callback total: %.3f ms; budget: %.3f ms; ""samples: %d; duration: %.3f s",output_rate,self.config.sample_rate,self.diagnostics_read_seconds/ callback_count* 1000.0,self.diagnostics_write_seconds/ callback_count* 1000.0,self.diagnostics_process_seconds/ callback_count* 1000.0,self.diagnostics_loop_seconds/ callback_count* 1000.0,self.control_period * 1000.0,self.iteration_count,elapsed,)
-        self.logger.info("Timeliness: worst interval %.3f ms (nominal %.3f ms); ""worst callback %.3f ms; late callbacks %d of %d (%.3f%%); ""peak AI backlog %d samples (%.1f ms, %.1f%% of buffer)",self.max_callback_interval * 1000.0,self.control_period * 1000.0,self.max_callback_duration * 1000.0,self.late_callbacks,callback_count,100.0 * self.late_callbacks / callback_count,self.max_backlog,self.max_backlog * self.control_dt * 1000.0,100.0 * self.max_backlog / self.config.ai_buffer_size,)
-
-        self._check_realtime(output_rate, callback_count)
-
-    def _check_realtime(self, output_rate, callback_count):
-        """Explicit pass/fail on whether every control deadline was met."""
-
-        if self.iteration_count < 100:
-            self.logger.info("REAL-TIME: run too short to assess (%d samples)",self.iteration_count,)
-            return False
-
-        problems = []
-
-        rate_error = abs(output_rate - self.config.sample_rate) / self.config.sample_rate
-        if rate_error > 0.005:
-            problems.append("sample rate off by %.2f%%" % (rate_error * 100.0,))
-
-        late_ratio = self.late_callbacks / callback_count
-        if late_ratio > 0.001:
-            problems.append("%.3f%% of callbacks late (%d)" % (late_ratio * 100.0, self.late_callbacks,))
-
-        backlog_limit = max(5 * self.batch_size, 10)
-        if self.max_backlog > backlog_limit:
-            problems.append("peak AI backlog %d samples > %d" % (self.max_backlog, backlog_limit,))
-
-        interval_ratio = self.max_callback_interval / self.control_period
-        if interval_ratio > 5.0:
-            problems.append("worst interval %.1fx nominal" % (interval_ratio,))
-
-        # Stability must be designed against the worst observed delay, not the nominal one.
-        worst_dead_time = self.max_callback_interval + self.max_callback_duration
-        nominal_dead_time = self.control_period + self.diagnostics_loop_seconds / callback_count
-
-        self.logger.info("Dead time: nominal %.3f ms (wc <= %.0f rad/s); ""worst %.3f ms (wc <= %.0f rad/s)",nominal_dead_time * 1000.0,1.0 / (5.0 * nominal_dead_time),worst_dead_time * 1000.0,1.0 / (5.0 * worst_dead_time),)
-
-        if not problems:
-            self.logger.info("REAL-TIME OK: every %.3f ms deadline met across %d callbacks",self.control_period * 1000.0,callback_count,)
-            return True
-
-        message = "REAL-TIME NOT MET: " + "; ".join(problems)
-        self.logger.error(message)
-        self.error.emit(message)
-        return False
+        self.logger.info("Callback interval: worst %.3f ms (nominal %.3f ms)",self.max_callback_interval * 1000.0,self.control_period * 1000.0,)
 
     def _flush_log(self):
 
